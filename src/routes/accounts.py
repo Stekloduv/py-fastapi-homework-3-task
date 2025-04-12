@@ -2,8 +2,10 @@ from datetime import datetime, timezone
 from typing import cast
 
 from fastapi import APIRouter, Depends, status, HTTPException
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from fastapi.responses import Response, JSONResponse
+from sqlalchemy import select, delete
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_jwt_auth_manager, get_settings, BaseAppSettings
 from database import (
@@ -25,62 +27,71 @@ from schemas import (
 )
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password, verify_password
-from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
 
 
-@router.post("/register/", status_code=status.HTTP_201_CREATED)
-def register_user(request: UserRegistrationRequestSchema, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"A user with this email {request.email} already exists.",
-        )
+@router.post("/register/", response_model=UserRegistrationResponseSchema, status_code=status.HTTP_201_CREATED)
+async def register_user(
+    user: UserRegistrationRequestSchema,
+    db: AsyncSession = Depends(get_db),
+):
+    user_group = await db.execute(select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER))
+    user_group = user_group.scalar_one_or_none()
 
-    hashed_password = hash_password(request.password)
-
-    new_user = User(
-        email=request.email,
-        password=hashed_password,
-        user_group=UserGroupEnum.USER,
+    hashed = hash_password(user.password)
+    db_user = UserModel(
+        email=user.email,
+        _hashed_password=hashed,
+        group_id=cast(int, user_group.id),
+        group=user_group,
     )
 
     try:
-        db.add(new_user)
-        db.commit()
-
-        activation_token = create_activation_token(new_user.id)
-
-        new_activation_token = UserActivationToken(
-            user_id=new_user.id,
-            token=activation_token,
-            expiration=activation_token_expiration,
+        db.add(db_user)
+        await db.commit()
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A user with this email {user.email} already exists."
         )
-        db.add(new_activation_token)
-        db.commit()
-
-        return {
-            "id": new_user.id,
-            "email": new_user.email
-        }
-    except Exception as e:
-        db.rollback()
+    except SQLAlchemyError:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred during user creation.",
+            detail="An error occurred during user creation."
         )
+    activation_token = ActivationTokenModel(
+        user_id=cast(int, db_user.id),
+        user=db_user,
+    )
+    try:
+        db.add(activation_token)
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        await db.delete(db_user)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred during user creation."
+        )
+    await db.refresh(db_user)
+    return db_user
 
-@router.post("/activate/", status_code=status.HTTP_201_CREATED)
-def activate_user(request: UserActivationRequestSchema, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == request.email).first()
+
+@router.post("/activate/", status_code=status.HTTP_200_OK)
+async def activate_user(
+    data: UserActivationRequestSchema,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    user = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    user = user.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-    elif user.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already active.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if user.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User account is already active.")
 
-    activation_token = db.execute(
+    activation_token = await db.execute(
         select(ActivationTokenModel)
         .where(ActivationTokenModel.token == data.token, ActivationTokenModel.user_id == user.id)
     )
@@ -93,17 +104,11 @@ def activate_user(request: UserActivationRequestSchema, db: Session = Depends(ge
             detail="Invalid or expired activation token."
         )
     user.is_active = True
-    db.delete(activation_token)
-    db.commit()
+    await db.delete(activation_token)
+    await db.commit()
 
     return JSONResponse(content={"message": "User account activated successfully."})
 
-
-@router.post("/password-reset/request/", status_code=status.HTTP_201_CREATED)
-def request_password_reset(request: PasswordResetRequestSchema, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == request.email).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
 @router.post("/password-reset/request/")
 async def request_password_reset(
@@ -161,6 +166,7 @@ async def complete_password_reset(
         )
 
     return JSONResponse(content={"message": "Password reset successfully."})
+
 
 @router.post("/login/", response_model=UserLoginResponseSchema, status_code=status.HTTP_201_CREATED)
 async def user_login(
@@ -227,4 +233,3 @@ async def refresh_token(
 
     new_access_token = jwt_manager.create_access_token(data={"user_id": decoded_token["user_id"]})
     return JSONResponse(content={"access_token": new_access_token})
-
