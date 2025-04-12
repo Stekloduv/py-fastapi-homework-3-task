@@ -54,3 +54,4 @@ class UserRegistrationResponseSchema(BaseModel):
     email: str
     full_name: str
     message: str
+
