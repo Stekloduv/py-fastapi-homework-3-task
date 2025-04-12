@@ -87,7 +87,7 @@ def activate_user(request: UserActivationRequestSchema, db: Session = Depends(ge
     db.delete(activation_token)
     db.commit()
 
-    JSONResponse(content={"message": "User account activated successfully."})
+    return JSONResponse(content={"message": "User account activated successfully."})
 
 
 @router.post("/password-reset/request/", status_code=status.HTTP_201_CREATED)

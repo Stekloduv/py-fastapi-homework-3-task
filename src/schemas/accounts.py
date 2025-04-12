@@ -16,7 +16,7 @@ class TokenDataSchema(BaseModel):
 
 class UserActivationRequestSchema(BaseModel):
     email: str
-    activation_code: str
+    token: str
 
 class MessageResponseSchema(BaseModel):
     message: str
@@ -27,7 +27,7 @@ class PasswordResetRequestSchema(BaseModel):
 
 class PasswordResetCompleteRequestSchema(BaseModel):
     email: str
-    reset_code: str
+    token: str
     new_password: str
 
 class UserLoginResponseSchema(BaseModel):
@@ -47,7 +47,6 @@ class TokenRefreshResponseSchema(BaseModel):
 class UserRegistrationRequestSchema(BaseModel):
     email: str
     password: str
-    full_name: str
 
 class UserRegistrationResponseSchema(BaseModel):
     user_id: int
