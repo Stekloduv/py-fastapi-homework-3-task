@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, status, HTTPException
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from config import get_jwt_auth_manager, get_settings, BaseAppSettings
 from database import (
@@ -32,11 +32,11 @@ router = APIRouter()
 
 
 @router.post("/register/", response_model=UserRegistrationResponseSchema, status_code=status.HTTP_201_CREATED)
-async def register_user(
+def register_user(
     user: UserRegistrationRequestSchema,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
-    user_group = await db.execute(select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER))
+    user_group = db.execute(select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER))
     user_group = user_group.scalar_one_or_none()
 
     hashed = hash_password(user.password)
@@ -49,7 +49,7 @@ async def register_user(
 
     try:
         db.add(db_user)
-        await db.commit()
+        db.commit()
     except IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -66,32 +66,32 @@ async def register_user(
     )
     try:
         db.add(activation_token)
-        await db.commit()
+        db.commit()
     except SQLAlchemyError:
-        await db.rollback()
-        await db.delete(db_user)
-        await db.commit()
+        db.rollback()
+        db.delete(db_user)
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred during user creation."
         )
-    await db.refresh(db_user)
+    db.refresh(db_user)
     return db_user
 
 
 @router.post("/activate/", status_code=status.HTTP_200_OK)
-async def activate_user(
+def activate_user(
     data: UserActivationRequestSchema,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ) -> Response:
-    user = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    user = db.execute(select(UserModel).where(UserModel.email == data.email))
     user = user.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if user.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User account is already active.")
 
-    activation_token = await db.execute(
+    activation_token = db.execute(
         select(ActivationTokenModel)
         .where(ActivationTokenModel.token == data.token, ActivationTokenModel.user_id == user.id)
     )
@@ -104,62 +104,62 @@ async def activate_user(
             detail="Invalid or expired activation token."
         )
     user.is_active = True
-    await db.delete(activation_token)
-    await db.commit()
+    db.delete(activation_token)
+    db.commit()
 
     return JSONResponse(content={"message": "User account activated successfully."})
 
 
 @router.post("/password-reset/request/")
-async def request_password_reset(
+def request_password_reset(
     data: PasswordResetRequestSchema,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ) -> Response:
-    user = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    user = db.execute(select(UserModel).where(UserModel.email == data.email))
     user = user.scalar_one_or_none()
     if user and user.is_active:
-        await db.execute(
+        db.execute(
             delete(PasswordResetTokenModel)
             .where(PasswordResetTokenModel.user_id == user.id)
         )
         token = PasswordResetTokenModel(user_id=cast(int, user.id), user=user)
         db.add(token)
-        await db.commit()
+        db.commit()
 
     return JSONResponse(content={"message": "If you are registered, you will receive an email with instructions."})
 
 
 @router.post("/reset-password/complete/")
-async def complete_password_reset(
+def complete_password_reset(
     data: PasswordResetCompleteRequestSchema,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ) -> Response:
-    user = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    user = db.execute(select(UserModel).where(UserModel.email == data.email))
     user = user.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email or token.")
-    reset_token = await db.execute(
+    reset_token = db.execute(
         select(PasswordResetTokenModel)
         .where(PasswordResetTokenModel.token == data.token, PasswordResetTokenModel.user_id == user.id)
     )
     reset_token = reset_token.scalar_one_or_none()
     if not reset_token or reset_token.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(tz=timezone.utc):
-        await db.execute(
+        db.execute(
             delete(PasswordResetTokenModel)
             .where(PasswordResetTokenModel.user_id == user.id)
         )
-        await db.commit()
+        db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email or token.")
 
     try:
         user._hashed_password = hash_password(data.password)
-        await db.execute(
+        db.execute(
             delete(PasswordResetTokenModel)
             .where(PasswordResetTokenModel.user_id == user.id)
         )
-        await db.commit()
+        db.commit()
     except SQLAlchemyError:
-        await db.rollback()
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while resetting the password."
@@ -169,13 +169,13 @@ async def complete_password_reset(
 
 
 @router.post("/login/", response_model=UserLoginResponseSchema, status_code=status.HTTP_201_CREATED)
-async def user_login(
+def user_login(
     data: UserLoginRequestSchema,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
     jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
     settings: BaseAppSettings = Depends(get_settings),
 ):
-    user = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    user = db.execute(select(UserModel).where(UserModel.email == data.email))
     user = user.scalar_one_or_none()
     if not user or (user and not verify_password(data.password, user._hashed_password)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
@@ -189,9 +189,9 @@ async def user_login(
             user_id=user.id, token=refresh_token, days_valid=settings.LOGIN_TIME_DAYS
         )
         db.add(refresh_token_model)
-        await db.commit()
+        db.commit()
     except SQLAlchemyError:
-        await db.rollback()
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while processing the request."
@@ -201,9 +201,9 @@ async def user_login(
 
 
 @router.post("/refresh/")
-async def refresh_token(
+def refresh_token(
     data: TokenRefreshRequestSchema,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
     jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
 ) -> Response:
     try:
@@ -213,7 +213,7 @@ async def refresh_token(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Token has expired."
         )
 
-    refresh_token_model = await db.execute(
+    refresh_token_model = db.execute(
         select(RefreshTokenModel)
         .where(
             RefreshTokenModel.token == data.refresh_token,
@@ -225,7 +225,7 @@ async def refresh_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token not found."
         )
-    user = await db.execute(select(UserModel).where(UserModel.id == decoded_token["user_id"]))
+    user = db.execute(select(UserModel).where(UserModel.id == decoded_token["user_id"]))
     if not user.scalar():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
