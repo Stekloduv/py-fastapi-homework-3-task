@@ -1,55 +1,50 @@
-from pydantic import BaseModel, EmailStr, field_validator
+class UserRegistrationRequestSchema(BaseModel):
+    email: EmailStr
+    password: str
 
-from database import accounts_validators
+    @field_validator("email", mode="after")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return accounts_validators.validate_email(value)
 
-class UserRegisterSchema(BaseModel):
-	email: EmailStr
-	password: str
+    @field_validator("password", mode="after")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return accounts_validators.validate_password_strength(value)
 
-class UserLoginSchema(BaseModel):
-	email: EmailStr
-	password: str
 
-class TokenDataSchema(BaseModel):
-	id: int | None = None
-	email: EmailStr | None = None
+class UserRegistrationResponseSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: EmailStr
+
 
 class UserActivationRequestSchema(BaseModel):
-    email: str
+    email: EmailStr
     token: str
 
-class MessageResponseSchema(BaseModel):
-    message: str
-    status: str
 
 class PasswordResetRequestSchema(BaseModel):
-    email: str
+    email: EmailStr
+
 
 class PasswordResetCompleteRequestSchema(BaseModel):
-    email: str
+    email: EmailStr
     token: str
-    new_password: str
+    password: str
+
+
+class UserLoginRequestSchema(BaseModel):
+    email: EmailStr
+    password: str
+
 
 class UserLoginResponseSchema(BaseModel):
     access_token: str
     refresh_token: str
+    token_type: str
 
-class UserLoginRequestSchema(BaseModel):
-    email: str
-    password: str
 
 class TokenRefreshRequestSchema(BaseModel):
     refresh_token: str
-
-class TokenRefreshResponseSchema(BaseModel):
-    access_token: str
-
-class UserRegistrationRequestSchema(BaseModel):
-    email: str
-    password: str
-
-class UserRegistrationResponseSchema(BaseModel):
-    user_id: int
-    email: str
-    full_name: str
-    message: str
